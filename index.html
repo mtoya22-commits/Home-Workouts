@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=Barlow+Condensed:wght@500;600&display=swap">
-<meta name="app-build" content="v4.2">
+<meta name="app-build" content="v4.3">
 
 <style>
 :root{
@@ -259,7 +259,7 @@ body.has-restbar .wrap{padding-block-end:230px}
 /* =========================================================
    1. DATA — 種目ライブラリ・テンプレート（ここだけ編集すれば種目追加可能）
    ========================================================= */
-const APP_BUILD = 'v4.2';        // アプリの版（表示・確認用）。SWのキャッシュ名 ietore-v4.2 と一致させる
+const APP_BUILD = 'v4.3';        // アプリの版（表示・確認用）。SWのキャッシュ名 ietore-v4.3 と一致させる
 const DATA_SCHEMA_VERSION = 4; // 保存データ形式の版（v4.2でプラン管理・equipHoldを追加したため4）。アプリの版 APP_BUILD とは別
 const STORE_KEY = 'ietore-v1';   // 保存先の名前。変更すると既存データが読めなくなるため固定
 
@@ -717,6 +717,11 @@ const Engine = {
   harder(ex,level){ for(let i=level+1;i<ex.variations.length;i++) if(this.avail(ex,ex.variations[i])) return i; return -1; },
   easier(ex,level){ for(let i=level-1;i>=0;i--) if(this.avail(ex,ex.variations[i])) return i; return -1; },
   idx(ex,vid){ return ex.variations.findIndex(v=>v.id===vid); },
+  /* 目標回数：reps種目では repMin〜repMax は「目安」。ユーザーの目標を制限しない（異常値防止の1〜999回のみ）。時間種目は従来どおり範囲内 */
+  userTarget(ex, v, t){ return ex.type==='reps' ? clamp(Math.round(+t)||v.repMin, 1, 999) : clamp(+t||v.repMin, v.repMin, v.repMax); },
+  isCustom(ex, v, t){ return ex.type==='reps' && (t<v.repMin || t>v.repMax); },   // customTarget：目安の範囲外の目標
+  /* 器具不足などで段階が自動で変わるとき：目安内の目標は新しい段階の目安に合わせ、自分で決めた範囲外の目標はそのまま引き継ぐ */
+  carryTarget(ex, fromV, toV, t){ return this.isCustom(ex, fromV, t) ? this.userTarget(ex, toV, t) : clamp(t, toV.repMin, toV.repMax); },
   setLevel(st,ex,i){ st.level=i; st.variationId=ex.variations[i].id; },
   setsOf(ex,st){ return (st&&st.sets)||ex.sets; },
   restOf(ex,st){ return (st&&st.restSec)||ex.restSec; },
@@ -731,13 +736,13 @@ const Engine = {
     if(lv<0) lv=0;
     let f=this.fitLevel(ex,lv,eq); if(f<0) f=0;
     const v=ex.variations[f];
-    return {variationId:v.id, target:(f===lv&&t!=null)?clamp(t,v.repMin,v.repMax):v.repMin, sets:sets||ex.sets, rest:ex.restSec, load:v.defaultLoad!=null?v.defaultLoad:null};
+    return {variationId:v.id, target:(f===lv&&t!=null)?this.userTarget(ex,v,t):v.repMin, sets:sets||ex.sets, rest:ex.restSec, load:v.defaultLoad!=null?v.defaultLoad:null};
   },
   newState(id, goal){
     const ex=EX[id]; const g=goal||this.defaultGoal(id, S.settings.experience);
     let i=this.idx(ex,g.variationId); if(i<0) i=0;
     const v=ex.variations[i];
-    return {variationId:v.id, level:i, target:clamp(+g.target||v.repMin, v.repMin, v.repMax),
+    return {variationId:v.id, level:i, target:this.userTarget(ex, v, g.target),
       sets:(+g.sets && +g.sets!==ex.sets)?+g.sets:null, restSec:(+g.rest && +g.rest!==ex.restSec)?+g.rest:null,
       load:(g.load!=null&&g.load!=='')?+g.load:null, loadLabel:g.loadLabel||'',
       topCount:0, sessions:0, levelUpReady:false, last:null, lastDecision:null, painNote:null, skipNext:false, painStreak:0, pausedByPain:false, equipHold:null};
@@ -754,11 +759,11 @@ const Engine = {
     if(f>=0 && f!==st.level){
       // 器具が使えなくなった：使える段階で行うが、元の段階・目標・重量は equipHold に残す（器具を戻したら復元）
       if(!st.equipHold) st.equipHold={variationId:st.variationId, target:st.target, load:st.load, loadLabel:st.loadLabel||''};
-      const v=ex.variations[f]; this.setLevel(st,ex,f); st.target=clamp(st.target,v.repMin,v.repMax); st.topCount=0; st.levelUpReady=false;
+      const ov=ex.variations[st.level], v=ex.variations[f]; this.setLevel(st,ex,f); st.target=this.carryTarget(ex,ov,v,st.target); st.topCount=0; st.levelUpReady=false;
     } else if(st.equipHold){
       const hi=this.idx(ex,st.equipHold.variationId);
       if(hi>st.level && this.avail(ex,ex.variations[hi])){   // 器具が戻った：保存していた段階に戻す
-        const hv=ex.variations[hi]; this.setLevel(st,ex,hi); st.target=clamp(st.equipHold.target,hv.repMin,hv.repMax);
+        const hv=ex.variations[hi]; this.setLevel(st,ex,hi); st.target=this.userTarget(ex,hv,st.equipHold.target);   // 保存していた目標をそのまま復元
         st.load=st.equipHold.load; st.loadLabel=st.equipHold.loadLabel; st.topCount=0; st.levelUpReady=false; st.equipHold=null;
       } else if(hi<=st.level){ st.equipHold=null; }   // 代わりの段階で追いついた・追い越した場合は保持を解除
     }
@@ -769,7 +774,7 @@ const Engine = {
   setGoal(id, g){
     const ex=EX[id], st=this.state(id); let i=this.idx(ex,g.variationId); if(i<0) i=st.level;
     const v=ex.variations[i];
-    this.setLevel(st,ex,i); st.target=clamp(+g.target||v.repMin, v.repMin, v.repMax);
+    this.setLevel(st,ex,i); st.target=this.userTarget(ex, v, g.target);   // 目安の範囲に戻さない
     st.sets=(+g.sets && +g.sets!==ex.sets)?+g.sets:null;
     st.restSec=(+g.rest && +g.rest!==ex.restSec)?+g.rest:null;
     st.load=(g.load!=null&&g.load!=='')?+g.load:null;
@@ -811,8 +816,9 @@ const Engine = {
     const bigMisses=reps.filter(x=>x<=T-bigGap).length;
     const deficit=reps.reduce((a,x)=>a+Math.max(0,T-x),0);
     const minA=n?Math.min.apply(null,reps):0;
-    const calib=st.sessions<2;
-    const d={rule:'', code:'hold', label:'据え置き', reason:'', from:{level:r.level,target:T,load:r.plannedLoad}, to:{level:r.level,target:T}, topCount:0, levelUpReady:false, calib};
+    const custom=this.isCustom(ex, v, T);     // customTarget：目安（repMin〜repMax）の範囲外に自分で決めた目標
+    const calib=st.sessions<2 && !custom;      // 自分で決めた開始値には、調整期間の大きな増減を使わない
+    const d={rule:'', code:'hold', label:'据え置き', reason:'', from:{level:r.level,target:T,load:r.plannedLoad}, to:{level:r.level,target:T}, topCount:0, levelUpReady:false, calib, custom};
 
     // 途中中止（痛みなし）→ 据え置き
     if(r.status==='stopped' && r.pain!=='pain'){
@@ -822,7 +828,18 @@ const Engine = {
 
     // --- A〜F：生の判定 ---
     let next=T, raw='';
-    if(allHit){
+    if(allHit && custom){
+      // 目安の範囲外：repMaxで丸めない。全セットで安定してできた回数（最少回数）も反映するが、
+      // 1回の記録で大きく跳ねないよう、実績による上乗せは目標の2割（最低3回）まで
+      const base=Math.max(T, Math.min(minA, T+Math.max(3, Math.round(T*0.2))));
+      let inc=0;
+      if(r.feel===1){ inc=2*step; d.rule='A'; raw='全セット達成＋かなり余裕だったため'; }
+      else if(r.feel===2){ inc=step; d.rule='B'; raw='全セット達成＋少し余裕だったため'; }
+      else if(r.feel===3){ d.rule='C'; raw='全セット達成・ちょうどいい負荷だったため'; }
+      else { d.rule='D'; raw='全セット達成したが、かなりきつかったため'; }
+      if(base>T) raw=`実際に全セット${minA}${u}以上できた実績を反映。`+raw;
+      next=base+inc;
+    } else if(allHit){
       const base=Math.min(Math.max(T,minA), v.repMax);   // 目標以上できた分は反映
       let inc=0;
       if(r.feel===1){ inc= calib?3*step : (base+2*step<=v.repMax?2*step:step); d.rule='A'; raw='全セット達成＋かなり余裕だったため'; }
@@ -859,7 +876,7 @@ const Engine = {
 
     // --- W：使用重量を予定から変えた → 実際にできた回数を次回目標に ---
     if(v.loaded && r.load!=null && r.plannedLoad!=null && +r.load!==+r.plannedLoad){
-      let t=clamp(minA||T, v.repMin, v.repMax);
+      let t= custom ? Math.max(1, minA||T) : clamp(minA||T, v.repMin, v.repMax);   // 目安外の目標は範囲へ戻さない
       if(t>T && (r.form!=='good' || r.pain==='discomfort')) t=T;
       d.rule='W'; d.code='weight'; d.label='重量変更'; d.to.target=t;
       d.reason=`使用重量を${fmtKg(r.plannedLoad)}→${fmtKg(r.load)}に変えたため、実際の回数（最少${minA}${u}）を基準に次回${t}${u}`;
@@ -873,8 +890,9 @@ const Engine = {
       else if(r.pain==='discomfort'){ next=T; d.code='discomfort'; cap='違和感があったため'; }
     }
 
-    // --- 難易度アップ判定（上限回数を安定して達成） ---
-    const eligible= allHit && r.form==='good' && r.pain==='none' && r.feel<=2 && minA>=v.repMax && r.status==='done';
+    // --- 難易度アップ判定（上限回数を安定して達成）。目安外の目標では強制せず、情報として「別の段階も選べる」だけ ---
+    if(custom && T>v.repMax && allHit && r.form==='good' && r.pain==='none' && r.feel<=2 && this.harder(ex,r.level)>=0) d.suggestHarder=true;
+    const eligible= !custom && allHit && r.form==='good' && r.pain==='none' && r.feel<=2 && minA>=v.repMax && r.status==='done';
     if(eligible){
       d.topCount=st.topCount+1; d.to.target=v.repMax;
       const hIdx=this.harder(ex,r.level), canW=!!v.wp;
@@ -888,7 +906,18 @@ const Engine = {
     }
 
     // --- 下限を下回る → やさしいvariationへ（大きく未達 or 調整期間のみ） ---
-    if(next<v.repMin){
+    if(next<v.repMin && custom){
+      // 自分で決めた回数は「目安の下限未満」だけを理由に変えない。複数セットで大きく未達（F）のときだけ既存の安全判定でやさしい段階へ
+      const e=this.easier(ex,r.level);
+      if(e>=0 && d.rule.startsWith('F')){
+        const ev=ex.variations[e];
+        d.to={level:e, target:Math.min(ev.repMax, ev.repMin+2*step)}; d.code='leveldown'; d.label='難易度ダウン';
+        d.reason=raw+`、${ev.name}へ`;
+        return d;
+      }
+      next=Math.max(1,next);
+    }
+    if(next<v.repMin && !custom){
       const e=this.easier(ex,r.level);
       if(e>=0 && (d.rule.startsWith('F') || calib)){
         const ev=ex.variations[e];
@@ -907,6 +936,7 @@ const Engine = {
     else if(diff<0){ d.code='down'; d.label=`前回より−${-diff}`; d.reason=raw+`次回−${-diff}${u}`; }
     else { d.code='hold'; d.label='据え置き'; d.reason=raw+'同じ回数で継続'; }
     if(calib) d.reason='調整期間：'+d.reason;
+    if(custom) d.reason+=`（目安 ${v.repMin}〜${v.repMax}${u}の範囲外の目標として調整）`;
     return d;
   },
 
@@ -949,13 +979,13 @@ const Engine = {
     this.setLevel(st,ex,h); st.target=to.repMin; st.topCount=0; st.levelUpReady=false;
     if(!this.sameEquip(from,to)) st.load=to.defaultLoad!=null?to.defaultLoad:null;
     st.lastDecision=Object.assign({}, st.lastDecision||{}, {code:'levelup_done', label:'難易度アップ', to:{level:h,variationId:to.id,target:to.repMin},
-      reason:`${from.name} → ${to.name}。目標は範囲の下限${to.repMin}${ex.unit}から`});
+      reason:`${from.name} → ${to.name}。目標は目安の下限${to.repMin}${ex.unit}から（設定画面で自由に変更できます）`});
   },
   acceptWeightUp(id, kg){
     const ex=EX[id], st=this.state(id), v=ex.variations[st.level]; const old=st.load;
     st.load=+kg; st.target=v.repMin; st.topCount=0; st.levelUpReady=false;
     st.lastDecision=Object.assign({}, st.lastDecision||{}, {code:'weightup', label:'重量アップ', to:{level:st.level,variationId:v.id,target:v.repMin},
-      reason:`${old!=null?fmtKg(old)+' → ':''}${fmtKg(kg)}。目標は範囲の下限${v.repMin}${ex.unit}から`});
+      reason:`${old!=null?fmtKg(old)+' → ':''}${fmtKg(kg)}。目標は目安の下限${v.repMin}${ex.unit}から`});
   },
   declineLevelUp(id){
     const ex=EX[id], st=this.state(id); st.levelUpReady=false; st.topCount=0;
@@ -1209,6 +1239,12 @@ const Session = {
     const ni=Plan.makeItem(tpl, it.slotId, it.order, {id:alt, reason:'sub'}, A.ctx||{cl:A.condLevel||0});
     A.items.splice(i,1,ni); save(); return alt;
   },
+  refreshItem(i){   // 実施前の種目だけ、現在の進捗から作り直す（記録済みの種目は触らない）
+    const A=S.active, it=A.items[i]; if(!it || it.state!=='todo') return;
+    const tpl=Plan.templateByKey(A.freq,A.dayKey)||{slots:[],optional:[]};
+    const ni=Plan.makeItem(tpl, it.slotId, it.order, {id:it.exerciseId, reason:it.subReason}, A.ctx||{cl:A.condLevel||0});
+    A.items.splice(i,1,ni); if(A.draft && A.draft.i===i) A.draft=null; save();
+  },
   resumePaused(i){
     const A=S.active, it=A.items[i];
     Engine.resumeFromPause(it.exerciseId);
@@ -1316,7 +1352,7 @@ function finalGoal(id, mode){
   let i=Engine.idx(ex,g.variationId);
   if(i<0||!Engine.avail(ex,ex.variations[i],eq)) i=Math.max(0,Engine.fitLevel(ex,Math.max(i,0),eq));
   const v=ex.variations[i];
-  return {variationId:v.id, i, v, target:clamp(+g.target||v.repMin,v.repMin,v.repMax), sets:+g.sets||ex.sets, rest:+g.rest||ex.restSec,
+  return {variationId:v.id, i, v, target:Engine.userTarget(ex, v, g.target), sets:+g.sets||ex.sets, rest:+g.rest||ex.restSec,
     load:(g.load===''||g.load==null||isNaN(+g.load))?null:+g.load};
 }
 function goalOrder(){
@@ -1331,7 +1367,7 @@ function goalEditorHTML(mode){
     const ex=EX[id];
     if(!Engine.anyAvail(ex,eq)) return `<div class="goal muted small"><strong>${h(ex.name)}</strong>：器具がないため代替種目で行います</div>`;
     const g=finalGoal(id,mode), i=g.i, v=g.v, step=Engine.stepOf(ex), edited=!!UI.goalEdits[id];
-    const opts=ex.variations.map((x,k)=>Engine.avail(ex,x,eq)?`<option value="${x.id}" ${k===i?'selected':''}>${h(x.name)}（${x.repMin}〜${x.repMax}${ex.unit}）</option>`:'').join('');
+    const opts=ex.variations.map((x,k)=>Engine.avail(ex,x,eq)?`<option value="${x.id}" ${k===i?'selected':''}>${h(x.name)}（目安 ${x.repMin}〜${x.repMax}${ex.unit}）</option>`:'').join('');
     const inUse=TEMPLATES[UI.sd.freq].some(t=>daySlotsOf(t).includes(id));
     return `<div class="goal stack-s" id="goal-${id}">
       <div class="row between"><strong>${h(ex.name)}</strong><span class="row" style="gap:6px">${edited?'<span class="chip info">変更あり</span>':''}${inUse?'':'<span class="chip">代替用</span>'}</span></div>
@@ -1344,9 +1380,22 @@ function goalEditorHTML(mode){
         <div class="field"><span class="label">セット</span>${segHTML('goalsets',id,[[2,'2'],[3,'3'],[4,'4']],g.sets)}</div>
       </div>
       <div class="field"><span class="label">セット間の休憩（秒）</span>${segHTML('goalrest',id,[[60,'60'],[90,'90'],[120,'120'],[150,'150']],g.rest)}</div>
+      <p class="small muted">目安 ${v.repMin}〜${v.repMax}${ex.unit}${ex.type==='reps'?'（目標回数は目安にとらわれず自由に設定できます）':''}</p>
+      ${Engine.isCustom(ex,v,g.target)?`<p class="small" style="color:var(--info)">${g.target>v.repMax?'推奨範囲を超えています。このままでも、別のバリエーションを選んでも構いません':'推奨範囲より少ない目標です。このままでも構いません'}</p>`:''}
       ${v.loaded?`<div class="field"><span class="label">使用重量（kg・任意）</span><input type="number" inputmode="decimal" step="0.5" min="0" id="gl-${id}" data-in="goalload" data-id="${id}" value="${g.load!=null?g.load:''}" placeholder="例：8"></div>`:''}
     </div>`;
   }).join('');
+}
+
+/* 目安の範囲外の目標（customTarget）の案内。エラーではないので赤くしない */
+function customNoteHTML(ex, v, target, i){
+  if(!Engine.isCustom(ex, v, target)) return '';
+  if(target>v.repMax){
+    const hIdx=Engine.harder(ex, v.level), hv=hIdx>=0?ex.variations[hIdx]:null;
+    return `<div class="note stack-s"><span>目標 ${target}${ex.unit}／目安 ${v.repMin}〜${v.repMax}${ex.unit}。推奨範囲を超えていますが、このまま続けても構いません。${hv?`${h(hv.name)}に変更することもできます。`:''}</span>
+      ${hv&&i!=null?`<button type="button" class="linkish small" data-act="switchharder" data-id="${ex.id}" data-i="${i}">${h(hv.name)}に変更する（任意）</button>`:''}</div>`;
+  }
+  return `<div class="note">目標 ${target}${ex.unit}／目安 ${v.repMin}〜${v.repMax}${ex.unit}。推奨範囲より少ない目標ですが、このまま続けられます。</div>`;
 }
 
 /* ---------- プラン管理 ---------- */
@@ -1582,7 +1631,7 @@ function levelUpPanel(id){
       <button type="button" class="btn btn-sm btn-primary" data-act="weightup" data-id="${id}" style="flex:1">この重量で進む</button></div>
       ${st.load!=null?`<span class="small muted">現在 ${fmtKg(st.load)}。これより重い値のみ「重量アップ」にできます</span>`:''}
       ${UI.lvErr&&UI.lvErr[id]?`<p class="error" role="alert">${h(UI.lvErr[id])}</p>`:''}</div>` : '';
-  const vBlock= to ? `<div class="stack-s"><span class="small"><strong>次の段階へ</strong>：${h(to.name)}（${to.repMin}〜${to.repMax}${ex.unit}）、${to.repMin}${ex.unit}から</span>
+  const vBlock= to ? `<div class="stack-s"><span class="small"><strong>次の段階へ</strong>：${h(to.name)}（目安 ${to.repMin}〜${to.repMax}${ex.unit}）、${to.repMin}${ex.unit}から</span>
       <button type="button" class="btn btn-sm ${canW?'':'btn-primary'}" data-act="levelup" data-id="${id}">次の段階へ進む</button></div>` : '';
   return `<div class="note info stack"><strong>次の難易度へ進めそうです</strong>
     ${wBlock}${vBlock}
@@ -1624,13 +1673,14 @@ function renderToday(){
       </div>`;
     }
     return `<div class="card stack">
-      <div class="ex-head"><div><h3>${h(ex.name)}</h3><div class="ex-var">${h(v.name)}${v.tempo?`・${h(v.tempo)}`:''}</div></div>
+      <div class="ex-head"><div><h3>${h(ex.name)}</h3><div class="ex-var">${h(v.name)}${v.tempo?`・${h(v.tempo)}`:''}（目安 ${v.repMin}〜${v.repMax}${ex.unit}）</div></div>
         <div class="row" style="gap:6px;justify-content:flex-end">${opt}${calib}${sub}${decisionChip(st.lastDecision)}</div></div>
       <div class="target-grid">
         <div><span class="label">今日</span><div class="target-big">${it.perSide?'<span class="u" style="margin:0 4px 0 0">各側</span>':''}${it.target}<span class="u">${it.unit}</span><span class="x">×</span>${it.sets}<span class="u">セット</span></div>
           ${it.loaded?`<div style="margin-top:6px">${it.load!=null?loadTag(it.load,it.loadLabel):'<span class="small muted">重量は記録時に入力</span>'}</div>`:''}</div>
         <div><span class="label">前回</span>${prevLine(st,it)}</div>
       </div>
+      ${customNoteHTML(ex, v, it.target, i)}
       ${it.optional?`<p class="small muted">補助種目です。時間と体力に余裕があれば行ってください。</p>`:''}
       ${it.notes.map(n=>`<div class="note warn">${h(n)}</div>`).join('')}
       ${st.painNote?`<div class="note pain">前回は痛みあり：${h(st.painNote)}。無理をせず、痛みが出たら中止してください。</div>`:''}
@@ -1707,7 +1757,7 @@ function renderExercise(){
       <div class="ex-var">${h(v.name)}${v.tempo?`・${h(v.tempo)}`:''}${v.load?`・${h(v.load)}`:''}</div>
     </div>
     <div class="card stack-s">
-      <span class="label">今日の目標</span>
+      <div class="row between"><span class="label">今日の目標</span><span class="small muted">目安 ${v.repMin}〜${v.repMax}${ex.unit}</span></div>
       <div class="hero-target">${it.perSide?'<span class="u" style="margin:0 6px 0 0">各側</span>':''}${it.target}<span class="u">${it.unit}</span><span class="x">×</span>${it.sets}<span class="u">セット</span></div>
       ${it.loaded&&it.load!=null?`<div>${loadTag(it.load,it.loadLabel)}</div>`:''}
       ${st.last?`<div class="small muted">前回 ${repsText(st.last.reps)}・${h(lastFeelText(st))}${st.last.load!=null?'・'+fmtKg(st.last.load):''}</div>`:''}
@@ -1872,6 +1922,7 @@ function renderSettings(){
       <p>W 使用重量を前回から変えた → 今回できた回数を次回目標の基準にする</p>
       <p>同じ種目で「痛みあり」が2回続くと、その種目を一時休止にします（違和感は含めません）。再開は自分で操作するまで行いません。</p>
       <p>停滞候補：比較できる記録（同じバリエーション・同じ重量・通常の条件とセット数・フォーム良好・痛みなし）の直近3回で、目標・バリエーション・重量が伸びていないときに表示します。お知らせのみで、自動では変更しません。</p>
+      <p>各バリエーションの回数は「目安」です。目標回数は目安の外でも自由に設定でき、その場合も上の A〜H で調整します（目安の上限で丸めない・目安外の目標では難易度アップを強制しない）。</p>
       <p>上限回数をフォーム良好・痛みなし・少し余裕以上で2回達成すると、難易度アップを提案します。ダンベルやリュック負荷の種目では「重量を上げて下限回数に戻す」も選べます。最初の2回は調整期間として増減幅を大きくしています。時間種目は1回＝5秒で計算します。</p></div></details>
     <p class="small muted" style="text-align:center">いえトレ手帳 ${APP_BUILD}（データ形式 v${DATA_SCHEMA_VERSION}）</p>
     <section class="card stack-s">
@@ -1965,7 +2016,7 @@ function formHTML(id, vid, cur){
   const varBtn=(i,label)=> i>=0 ? `<button type="button" class="linkish" data-act="formvar" data-id="${id}" data-vid="${ex.variations[i].id}">${h(ex.variations[i].name)}</button>` : `<span class="muted">${label}</span>`;
   const vars=ex.variations.map((x,i)=>{
     const ok=Engine.avail(ex,x);
-    return `<div class="${i===curIdx?'cur':''} ${ok?'':'muted'}">${i+1}. <button type="button" class="linkish" data-act="formvar" data-id="${id}" data-vid="${x.id}">${h(x.name)}</button> <span class="small muted">${x.repMin}〜${x.repMax}${ex.unit}${x.load?'・'+h(x.load):''}${ok?'':'・器具なし'}</span> <span class="small">${i===curIdx?'（現在）':''}</span></div>`;
+    return `<div class="${i===curIdx?'cur':''} ${ok?'':'muted'}">${i+1}. <button type="button" class="linkish" data-act="formvar" data-id="${id}" data-vid="${x.id}">${h(x.name)}</button> <span class="small muted">目安 ${x.repMin}〜${x.repMax}${ex.unit}${x.load?'・'+h(x.load):''}${ok?'':'・器具なし'}</span> <span class="small">${i===curIdx?'（現在）':''}</span></div>`;
   }).join('');
   return `
     <div class="row between"><h2 id="dlgTitle">${h(ex.name)}</h2><button type="button" class="btn btn-sm" data-act="closedlg" aria-label="閉じる">閉じる</button></div>
@@ -2200,13 +2251,14 @@ const A = {
   goalvar(d,t){
     const ex=EX[d.id], i=Engine.idx(ex,t.value), v=ex.variations[i], mode=UI.screen==='setup'?'setup':'settings';
     const cur=goalOf(d.id,mode);
-    UI.goalEdits[d.id]=Object.assign({}, UI.goalEdits[d.id]||{}, {variationId:v.id, target:clamp(+cur.target||v.repMin, v.repMin, v.repMax),
+    // バリエーションを変えたら新しい段階の目安の下限を「おすすめ開始値」として入れる（その後は自由に変更できる）
+    UI.goalEdits[d.id]=Object.assign({}, UI.goalEdits[d.id]||{}, {variationId:v.id, target: ex.type==='reps' ? v.repMin : clamp(+cur.target||v.repMin, v.repMin, v.repMax),
       load:v.loaded?(cur.load!=null&&cur.load!==''?cur.load:(v.defaultLoad!=null?v.defaultLoad:'')):null});
     render();
   },
   goalstep(d){
     const mode=UI.screen==='setup'?'setup':'settings', g=finalGoal(d.id,mode);
-    UI.goalEdits[d.id]=Object.assign({}, UI.goalEdits[d.id]||{}, {variationId:g.variationId, target:clamp(g.target+(+d.d), g.v.repMin, g.v.repMax)});
+    UI.goalEdits[d.id]=Object.assign({}, UI.goalEdits[d.id]||{}, {variationId:g.variationId, target:Engine.userTarget(EX[d.id], g.v, g.target+(+d.d))});
     render();
   },
   goalsets(d){ UI.goalEdits[d.key]=Object.assign({}, UI.goalEdits[d.key]||{}, {sets:+d.val}); render(); },
@@ -2259,6 +2311,11 @@ const A = {
     if(k>=0){ const b=document.querySelector(`[data-act="checkset"][data-s="${k}"]`); if(b){ if(b.scrollIntoView) b.scrollIntoView({block:'center'}); if(b.focus) b.focus(); } }
   },
   pauseskip(d){ Session.pauseSkip(+d.i); render(); },
+  switchharder(d){   // 目安を超える目標のときの任意の段階変更（新しい段階の目安の下限から。回数はあとで自由に変更可）
+    Engine.acceptLevelUp(d.id); save();
+    if(S.active && d.i!=null) Session.refreshItem(+d.i);
+    const st=Engine.state(d.id); UI.msg=`${EX[d.id].name}：${EX[d.id].variations[st.level].name}に変更しました（目標${st.target}${EX[d.id].unit}から。設定画面で自由に変更できます）`; render();
+  },
   pausealt(d){ const alt=Session.useAlt(+d.i); UI.msg= alt?`代替種目（${EX[alt].name}）に変更しました`:'使える代替種目がありません'; render(); },
   pauseresumeask(d){ UI.resumeConfirm=d.id; render(); },
   pauseresumecancel(){ UI.resumeConfirm=null; render(); },
