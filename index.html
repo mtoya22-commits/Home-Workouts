@@ -15,6 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=Barlow+Condensed:wght@500;600&display=swap">
+<meta name="app-build" content="v4.1">
 
 <style>
 :root{
@@ -258,8 +259,9 @@ body.has-restbar .wrap{padding-block-end:230px}
 /* =========================================================
    1. DATA — 種目ライブラリ・テンプレート（ここだけ編集すれば種目追加可能）
    ========================================================= */
-const APP_VERSION = 3;
-const STORE_KEY = 'ietore-v1';
+const APP_BUILD = 'v4.1';        // アプリの版（表示・確認用）。SWのキャッシュ名 ietore-v4.1 と一致させる
+const APP_VERSION = 3;         // データ形式の版（v4でも形式は変わらないので3のまま）
+const STORE_KEY = 'ietore-v1';   // 保存先の名前。変更すると既存データが読めなくなるため固定
 
 const EQUIP = [
   {id:'abroller', label:'アブローラー'},
@@ -425,7 +427,7 @@ defEx({id:'abroller', name:'アブローラー', category:'core', priority:3, ty
     V('kneeshort','膝コロ・短い可動域',6,12),
     V('knee','膝コロ',6,12),
     V('kneelong','膝コロ・ロングレンジ',6,12),
-    V('standshort','立ちコロ・短い可動域',5,10,{load:'壁に向かって転がし止める'}),
+    V('standshort','立ちコロ・短い可動域',5,10,{load:'床の上で、高プランク程度までを目安に'}),
     V('stand','立ちコロ',5,10)
   ],
   cues:['お腹を丸めた（骨盤後傾）まま転がす','腰が反る手前で戻る','腕ではなく腹筋で引き戻す'],
@@ -559,13 +561,13 @@ const FORM_VIDEOS = {
     variations:{ kneeshort:ytVideo('qeqofno2lSM','Ab Wheel Rollout — (How To Use An Ab Roller Wheel)','Fit Father Project - Fitness For Busy Fathers'),
       knee:ytVideo('qeqofno2lSM','Ab Wheel Rollout — (How To Use An Ab Roller Wheel)','Fit Father Project - Fitness For Busy Fathers'),
       kneelong:ytVideo('qeqofno2lSM','Ab Wheel Rollout — (How To Use An Ab Roller Wheel)','Fit Father Project - Fitness For Busy Fathers'),
-      standshort:ytVideo('3vfTLXQUZeI','Standing Ab Wheel Rollout Tutorial','Ross Enamait'),
-      stand:ytVideo('3vfTLXQUZeI','Standing Ab Wheel Rollout Tutorial','Ross Enamait') },
+      standshort:ytVideo('i6BdG7kuF88','Standing Ab Wheel Rollouts - Form Clarification (HD)','Ross Enamait'),
+      stand:ytVideo('i6BdG7kuF88','Standing Ab Wheel Rollouts - Form Clarification (HD)','Ross Enamait') },
     notes:{ kneeshort:'このバリエーションでは膝をついたまま、短い範囲で止めて戻ります。腰が反らない範囲で行います',
       knee:'膝をついて行います。腰が反らない範囲で転がして戻ります',
       kneelong:'このバリエーションでは膝をついたまま、腰が反らない範囲でより遠くまで転がします',
-      standshort:'現在の「立ちコロ・短い可動域」では、動画の完成形まで伸ばす必要はありません。腰が反らない範囲で、設定した可動域（壁で止める位置など）まで進んで戻ります',
-      stand:'腰が反らない範囲で行います。反りそうなら「立ちコロ・短い可動域」に戻してください' } },
+      standshort:'通常の立ちコロと同じように床の上を転がします。現在はフルレンジまで伸ばさず、腰が反らない範囲（高プランク程度を目安）で戻ります',
+      stand:'腰が反らず、体幹を保てる範囲まで伸ばします。可動域を無理に広げず、フォームが崩れる場合は「立ちコロ・短い可動域」へ戻してください' } },
   plank:{ video:ytVideo('U4OX9fKDJU8','Forearm Plank','E3 Rehab Exercise Library'),
     notes:{ knee:'このバリエーションでは膝をついて行います。肘の位置と体の一直線は同じです',
       long:'このバリエーションでは肘を頭の方へ前に置き、てこを長くして行います',
@@ -1744,6 +1746,7 @@ function renderSettings(){
       <p>同じ種目で「痛みあり」が2回続くと、その種目を一時休止にします（違和感は含めません）。再開は自分で操作するまで行いません。</p>
       <p>停滞候補：比較できる記録（同じバリエーション・同じ重量・通常の条件とセット数・フォーム良好・痛みなし）の直近3回で、目標・バリエーション・重量が伸びていないときに表示します。お知らせのみで、自動では変更しません。</p>
       <p>上限回数をフォーム良好・痛みなし・少し余裕以上で2回達成すると、難易度アップを提案します。ダンベルやリュック負荷の種目では「重量を上げて下限回数に戻す」も選べます。最初の2回は調整期間として増減幅を大きくしています。時間種目は1回＝5秒で計算します。</p></div></details>
+    <p class="small muted" style="text-align:center">いえトレ手帳 ${APP_BUILD}（データ形式 v${APP_VERSION}）</p>
     <section class="card stack-s">
       ${UI.confirmReset
         ? `<p>すべての設定と履歴を削除します。元に戻せません。</p><div class="btn-row"><button type="button" class="btn btn-danger-solid" data-act="resetyes">削除する</button><button type="button" class="btn" data-act="resetno">キャンセル</button></div>`
