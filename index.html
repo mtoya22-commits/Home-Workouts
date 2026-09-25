@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&family=Barlow+Condensed:wght@500;600&display=swap">
-<meta name="app-build" content="v4.1">
+<meta name="app-build" content="v4.2">
 
 <style>
 :root{
@@ -259,8 +259,8 @@ body.has-restbar .wrap{padding-block-end:230px}
 /* =========================================================
    1. DATA — 種目ライブラリ・テンプレート（ここだけ編集すれば種目追加可能）
    ========================================================= */
-const APP_BUILD = 'v4.1';        // アプリの版（表示・確認用）。SWのキャッシュ名 ietore-v4.1 と一致させる
-const APP_VERSION = 3;         // データ形式の版（v4でも形式は変わらないので3のまま）
+const APP_BUILD = 'v4.2';        // アプリの版（表示・確認用）。SWのキャッシュ名 ietore-v4.2 と一致させる
+const DATA_SCHEMA_VERSION = 4; // 保存データ形式の版（v4.2でプラン管理・equipHoldを追加したため4）。アプリの版 APP_BUILD とは別
 const STORE_KEY = 'ietore-v1';   // 保存先の名前。変更すると既存データが読めなくなるため固定
 
 const EQUIP = [
@@ -638,7 +638,7 @@ const Store = {
   }
 };
 function defaultState(){
-  return {version:APP_VERSION, settings:null, exercises:{}, subs:{}, rotation:0, sessions:[], active:null};
+  return {version:DATA_SCHEMA_VERSION, settings:null, exercises:{}, subs:{}, rotation:0, sessions:[], active:null};
 }
 function migrate(s){
   const d=defaultState();
@@ -670,7 +670,13 @@ function migrate(s){
   });
   out.sessions.forEach(ses=>(ses.exercises||[]).forEach(r=>{ if(r.progressEligible===undefined){ r.progressEligible=null; r.excludeReasons=['legacy']; } }));
   if(out.settings){ if(out.settings.restSound===undefined) out.settings.restSound=false; if(!out.settings.sportIntensity) out.settings.sportIntensity={}; }
-  out.version=APP_VERSION;
+  // v4.2：プラン管理（恒久設定＝settings／次週からの予約＝settingsPending／今週だけ＝weeklyOverride／一時停止＝planPaused）
+  if(out.settingsPending===undefined) out.settingsPending=null;
+  if(out.weeklyOverride===undefined) out.weeklyOverride=null;
+  if(out.planPaused===undefined) out.planPaused=null;
+  if(out.planResumedAt===undefined) out.planResumedAt=null;
+  Object.keys(out.exercises).forEach(id=>{ const st=out.exercises[id]; if(st && st.equipHold===undefined) st.equipHold=null; });
+  out.version=DATA_SCHEMA_VERSION;   // v1〜v3（v4.1までのバックアップは version 3）→ 4
   return out;
 }
 function isValidBackup(o){ return o && typeof o==='object' && o.settings && typeof o.settings==='object' && Array.isArray(o.sessions) && o.exercises && typeof o.exercises==='object'; }
@@ -734,7 +740,7 @@ const Engine = {
     return {variationId:v.id, level:i, target:clamp(+g.target||v.repMin, v.repMin, v.repMax),
       sets:(+g.sets && +g.sets!==ex.sets)?+g.sets:null, restSec:(+g.rest && +g.rest!==ex.restSec)?+g.rest:null,
       load:(g.load!=null&&g.load!=='')?+g.load:null, loadLabel:g.loadLabel||'',
-      topCount:0, sessions:0, levelUpReady:false, last:null, lastDecision:null, painNote:null, skipNext:false, painStreak:0, pausedByPain:false};
+      topCount:0, sessions:0, levelUpReady:false, last:null, lastDecision:null, painNote:null, skipNext:false, painStreak:0, pausedByPain:false, equipHold:null};
   },
 
   /* 種目ごとの進捗状態（なければ既定の開始値で初期化） */
@@ -746,7 +752,15 @@ const Engine = {
     this.setLevel(st,ex,i);
     const f=this.fitLevel(ex,st.level);
     if(f>=0 && f!==st.level){
+      // 器具が使えなくなった：使える段階で行うが、元の段階・目標・重量は equipHold に残す（器具を戻したら復元）
+      if(!st.equipHold) st.equipHold={variationId:st.variationId, target:st.target, load:st.load, loadLabel:st.loadLabel||''};
       const v=ex.variations[f]; this.setLevel(st,ex,f); st.target=clamp(st.target,v.repMin,v.repMax); st.topCount=0; st.levelUpReady=false;
+    } else if(st.equipHold){
+      const hi=this.idx(ex,st.equipHold.variationId);
+      if(hi>st.level && this.avail(ex,ex.variations[hi])){   // 器具が戻った：保存していた段階に戻す
+        const hv=ex.variations[hi]; this.setLevel(st,ex,hi); st.target=clamp(st.equipHold.target,hv.repMin,hv.repMax);
+        st.load=st.equipHold.load; st.loadLabel=st.equipHold.loadLabel; st.topCount=0; st.levelUpReady=false; st.equipHold=null;
+      } else if(hi<=st.level){ st.equipHold=null; }   // 代わりの段階で追いついた・追い越した場合は保持を解除
     }
     return st;
   },
@@ -760,6 +774,7 @@ const Engine = {
     st.restSec=(+g.rest && +g.rest!==ex.restSec)?+g.rest:null;
     st.load=(g.load!=null&&g.load!=='')?+g.load:null;
     st.topCount=0; st.levelUpReady=false;
+    st.equipHold=null;   // 手動設定を最新の意思として優先し、器具を戻したときの古い復元予約は破棄する
     st.lastDecision={code:'manual', label:'手動で設定', reason:'設定画面で目標を変更しました', rule:'',
       to:{level:i, variationId:v.id, target:st.target}};
   },
@@ -969,7 +984,23 @@ function estimate(items){ return 120+items.filter(i=>i.state==='todo'&&!i.option
 function roundMin(sec){ return Math.max(5, Math.round(sec/60/5)*5); }
 function daySlotsOf(tpl){ return tpl?tpl.slots.concat(tpl.optional||[]):[]; }
 /* 明日が他の運動の日なら、その強度（light/normal/hard）。違えば null */
-function sportIntensityFor(wd){
+/* ---------- プランの解決：日付ごとに「今週だけの変更」→「次週からの予約」→「恒久設定」の順で決める ---------- */
+function thisWeekYmd(d){ return ymd(weekStart(d||new Date())); }
+function nextMondayYmd(d){ return ymd(addDays(weekStart(d||new Date()),7)); }
+function settingsFor(date){ const p=S.settingsPending; return (p && ymd(date)>=p.effectiveFrom) ? p.settings : S.settings; }
+function planFor(date){
+  const base=settingsFor(date), o=S.weeklyOverride, inO= !!o && ymd(weekStart(date))===o.weekStart;
+  return { days: inO&&o.days ? o.days : (base.days||[]),
+    sportDays: inO&&o.sportDays ? o.sportDays : (base.sportDays||[]),
+    sportIntensity: inO&&o.sportIntensity ? o.sportIntensity : (base.sportIntensity||{}),
+    sportName: base.sportName||'他の運動', freq: +base.freq, override: inO };
+}
+function sportIntensityForDate(date){
+  const p=planFor(date), wd=date.getDay();
+  if(!p.sportDays.includes(wd)) return null;
+  return p.sportIntensity[wd]||'normal';
+}
+function sportIntensityFor(wd){   // 互換用（恒久設定のみ参照）
   if(!(S.settings.sportDays||[]).includes(wd)) return null;
   return (S.settings.sportIntensity||{})[wd]||'normal';
 }
@@ -1001,7 +1032,7 @@ const Plan = {
     opts=opts||{};
     const tpl=this.template(), cl=condLevel(opts.condition), all=daySlotsOf(tpl);
     const sport=S.settings.sportName||'他の運動';
-    const sportInt=sportIntensityFor((new Date().getDay()+1)%7);
+    const sportInt=sportIntensityForDate(addDays(new Date(),1));
     const ctx={cl, sportInt, sport};
     const notes=[];
     if(cl===1) notes.push('今日は負荷を上げず、前回と同じ回数で行います');
@@ -1064,17 +1095,37 @@ function weeklySets(){
 }
 
 function movedNotice(){
-  const days=S.settings.days||[]; if(!days.length) return false;
-  const last=S.sessions.length?S.sessions[S.sessions.length-1].date:(S.settings.createdAt||ymd());
+  if(S.planPaused) return false;   // 一時停止中は予定が進まない（未達扱いにしない）
+  let last=S.sessions.length?S.sessions[S.sessions.length-1].date:(S.settings.createdAt||ymd());
+  if(S.planResumedAt){ const b=ymd(addDays(parseYmd(S.planResumedAt),-1)); if(b>last) last=b; }   // 停止期間は数えない
   const today=new Date();
-  for(let i=1;i<=7;i++){ const d=addDays(today,-i), ds=ymd(d); if(ds<=last) break; if(days.includes(d.getDay())) return true; }
+  for(let i=1;i<=7;i++){ const d=addDays(today,-i), ds=ymd(d); if(ds<=last) break; if(planFor(d).days.includes(d.getDay())) return true; }
   return false;
 }
 function nextPlannedText(){
-  const days=S.settings.days||[]; const t=new Date();
-  if(days.includes(t.getDay())) return '今日は予定日です';
-  for(let i=1;i<=7;i++){ const d=addDays(t,i); if(days.includes(d.getDay())) return `次の予定日：${WD[d.getDay()]}曜（予定日以外でも始められます）`; }
+  const t=new Date();
+  if(planFor(t).days.includes(t.getDay())) return '今日は予定日です';
+  for(let i=1;i<=7;i++){ const d=addDays(t,i); if(planFor(d).days.includes(d.getDay())) return `次の予定日：${WD[d.getDay()]}曜（予定日以外でも始められます）`; }
   return '予定曜日は未設定です';
+}
+/* 期限が来た予約の適用・先週の「今週だけ」の解除。実施中のS.activeは変更しない */
+function maintainPlan(){
+  if(!S.settings) return false;
+  let ch=false; const today=ymd();
+  const p=S.settingsPending;
+  if(p && today>=p.effectiveFrom){
+    const oldFreq=+S.settings.freq;
+    S.settings=Object.assign({}, S.settings, p.settings, {createdAt:S.settings.createdAt});
+    if(+S.settings.freq!==oldFreq) S.rotation=0;
+    S.settingsPending=null; ch=true;
+  }
+  if(S.weeklyOverride && S.weeklyOverride.weekStart!==thisWeekYmd()){ S.weeklyOverride=null; ch=true; }   // 翌週は自動で通常の予定へ
+  return ch;
+}
+function planSummary(st){
+  const dn=a=>WEEK.filter(w=>(a||[]).includes(w.v)).map(w=>w.l).join('・')||'なし';
+  const sp=(st.sportDays||[]).length ? `${st.sportName||'他の運動'}：${WEEK.filter(w=>st.sportDays.includes(w.v)).map(w=>w.l+'（'+SPORT_INT[(st.sportIntensity||{})[w.v]||'normal']+'）').join('・')}` : '他の運動：なし';
+  return {freq:`週${st.freq}回・${dn(st.days)}`, dur:({short:'15〜20分',std:'25〜40分',long:'40分以上'})[st.duration]||'', eq:(st.equipment||[]).map(x=>(EQUIP.find(e=>e.id===x)||{}).label).filter(Boolean).join('・')||'なし', sport:sp};
 }
 function weekCount(){ const ws=ymd(weekStart(new Date())); return S.sessions.filter(s=>s.date>=ws).length; }
 
@@ -1178,7 +1229,8 @@ const Session = {
       const session={id:A.id, date:A.date, startedAt:A.startedAt, endedAt:end, durationMin:Math.max(1,Math.round((end-A.startedAt)/60000)),
         dayKey:A.dayKey, dayLabel:A.dayLabel, daySub:A.daySub, freq:A.freq, mode:A.mode, condition:A.condition, notes:A.notes,
         exercises:recorded.map(it=>it.result)};
-      S.sessions.push(session); S.rotation++; sid=session.id;
+      S.sessions.push(session); sid=session.id;
+      if(+A.freq===+S.settings.freq) S.rotation++;   // 実施中に頻度を変えた場合は、新しいプランを最初（A）から始める
       A.items.filter(it=>it.state==='rest').forEach(it=>{ const st=S.exercises[it.exerciseId]; if(st) st.skipNext=false; });
     }
     S.active=null; save(); return sid;
@@ -1222,7 +1274,7 @@ function defaultSettings(){
   return {freq:2, duration:'std', equipment:['abroller','dumbbell','backpack','bottle','chair'], experience:'regular',
     days:[2,5], sportName:'テニス', sportDays:[], sportIntensity:{}, restSound:false, createdAt:ymd()};
 }
-function settingsFormHTML(sd){
+function settingsFormHTML(sd, mode){
   const eqBtns=EQUIP.map(e=>`<button type="button" class="opt" data-act="sdtoggle" data-key="equipment" data-val="${e.id}" aria-pressed="${sd.equipment.includes(e.id)}">${h(e.label)}</button>`).join('');
   const dayBtns=(key)=>WEEK.map(w=>`<button type="button" class="opt" data-act="sdtoggle" data-key="${key}" data-val="${w.v}" aria-pressed="${sd[key].includes(w.v)}" aria-label="${w.l}曜">${w.l}</button>`).join('');
   return `
@@ -1230,7 +1282,8 @@ function settingsFormHTML(sd){
     <div class="field"><span class="label">頻度</span>${segHTML('sdset','freq',[[2,'週2回'],[3,'週3回']],sd.freq)}</div>
     <div class="field"><span class="label">1回の希望時間</span>${segHTML('sdset','duration',[['short','15〜20分'],['std','25〜40分'],['long','40分以上']],sd.duration)}
       <p class="small muted">15〜20分を選ぶと、毎回「短縮モード」から始まります。</p></div>
-    <div class="field"><span class="label">トレーニング経験</span>${segHTML('sdset','experience',[['beginner','初心者'],['some','少し経験あり'],['regular','継続している']],sd.experience)}</div>
+    <div class="field"><span class="label">トレーニング経験</span>${segHTML('sdset','experience',[['beginner','初心者'],['some','少し経験あり'],['regular','継続している']],sd.experience)}
+      ${mode==='replan'?'<p class="small muted">経験は、まだ記録のない種目の開始値の目安にだけ使います。いまの進捗は変わりません。</p>':''}</div>
   </div>
   <div class="card stack">
     <div class="field"><span class="label">使用できる器具（複数選択）</span><div class="chips" role="group" aria-label="器具">${eqBtns}</div></div>
@@ -1296,6 +1349,68 @@ function goalEditorHTML(mode){
   }).join('');
 }
 
+/* ---------- プラン管理 ---------- */
+function daysText(a){ return WEEK.filter(w=>(a||[]).includes(w.v)).map(w=>w.l).join('・')||'なし'; }
+function weekRangeText(){ const ws=weekStart(new Date()); return `${md(ymd(ws))}〜${md(ymd(addDays(ws,6)))}`; }
+function currentOverride(){ const o=S.weeklyOverride; return o && o.weekStart===thisWeekYmd() ? o : null; }
+function planCardHTML(){
+  const cur=planSummary(S.settings), p=S.settingsPending, o=currentOverride();
+  return `<section class="card stack-s" aria-labelledby="planL"><span class="label" id="planL">トレーニングプラン</span>
+    ${S.planPaused?`<div class="note warn"><strong>プランを一時停止中（${mdw(S.planPaused.since)}〜）</strong>予定日に行わなくても未達にはなりません。進捗はそのまま残っています。</div>`:''}
+    <div><strong>${h(cur.freq)}</strong><div class="small muted">${h(cur.dur)}・器具：${h(cur.eq)}</div><div class="small muted">${h(cur.sport)}</div></div>
+    ${p?`<div class="note info stack-s"><span><strong>${mdw(p.effectiveFrom)}から変更予定</strong>${h(planSummary(p.settings).freq)}／${h(planSummary(p.settings).sport)}</span>
+      <button type="button" class="linkish" data-act="cancelpending">この予約を取り消す</button></div>`:''}
+    ${o?`<div class="note info stack-s"><span><strong>今週だけの予定（${weekRangeText()}）</strong>筋トレ：${h(daysText(o.days))}／${h(S.settings.sportName||'他の運動')}：${h(daysText(o.sportDays))}</span>
+      <button type="button" class="linkish" data-act="wkclear">通常の予定に戻す</button></div>`:''}
+    <div class="stack-s">
+      <button type="button" class="btn btn-block" data-act="replan">週間プランを設定し直す</button>
+      <button type="button" class="btn btn-block" data-act="weekplan">今週の予定を変更</button>
+      ${S.planPaused?`<button type="button" class="btn btn-primary btn-block" data-act="resumeplan">プランを再開する</button>`
+        :`<button type="button" class="btn btn-block" data-act="pauseplan">トレーニングプランを一時停止</button>`}
+    </div>
+    <p class="small muted">どの操作でも、記録と種目ごとの進捗（バリエーション・次回目標・重量・痛みの記録）は消えません。</p>
+  </section>`;
+}
+function replanTiming(){ return UI.applyTiming || ((+UI.sd.freq!==+S.settings.freq)?'next':'now'); }
+function renderReplan(){
+  UI.sd=UI.sd||JSON.parse(JSON.stringify(S.settingsPending?S.settingsPending.settings:S.settings));
+  const t=replanTiming(), freqChanged=+UI.sd.freq!==+S.settings.freq, nm=nextMondayYmd();
+  return `<div class="wrap no-tab stack">
+    <div class="topbar"><button type="button" class="btn-link" data-act="replanback">← 戻る</button></div>
+    <div class="stack-s"><h2>週間プランを設定し直す</h2>
+      <div class="note info">記録・種目ごとの進捗（バリエーション・次回目標・重量）・痛みの記録・停滞判定用の記録は消えません。変わるのは、これからの予定だけです。</div></div>
+    ${settingsFormHTML(UI.sd,'replan')}
+    <div class="card stack-s">
+      <span class="label">反映するタイミング</span>
+      ${segHTML('applytiming','t',[['now','今週から反映'],['next',`次週（${md(nm)}〜）から`]],t)}
+      ${freqChanged?`<p class="small" style="color:var(--info)">週2回⇔週3回の変更は、今週の途中でメニューの組み方が変わらないよう「次週から」をおすすめします。</p>`:''}
+      ${t==='now'&&S.active?'<p class="small muted">実施中のトレーニングは今の内容のまま続きます。新しい予定は次のトレーニングから使われます。</p>':''}
+      ${t==='now'&&currentOverride()?'<p class="small muted">今週だけの変更は解除され、この内容に置き換わります。</p>':''}
+      ${S.settingsPending?`<p class="small muted">予約中の変更（${md(S.settingsPending.effectiveFrom)}〜）は、この内容で置き換わります。</p>`:''}
+      <p class="small muted">休憩終了の音は、どちらを選んでもすぐに反映されます。</p>
+    </div>
+    <button type="button" class="btn btn-primary btn-hero" data-act="savereplan" ${daysStatus(UI.sd).ok?'':'disabled'}>この内容で保存（記録は消えません）</button>
+    <p class="small muted" style="text-align:center">記録をすべて消す場合は、設定画面の「すべてのデータを削除」を使います（別の操作です）。</p>
+  </div>`;
+}
+function renderWeekPlan(){
+  const o=currentOverride(), base=planFor(new Date());
+  UI.wk=UI.wk||{days:(o?o.days:base.days).slice(), sportDays:(o?o.sportDays:base.sportDays).slice(), sportIntensity:Object.assign({}, o?o.sportIntensity:base.sportIntensity)};
+  const w=UI.wk, sport=S.settings.sportName||'他の運動', f=+S.settings.freq;
+  const btns=key=>WEEK.map(x=>`<button type="button" class="opt" data-act="wktoggle" data-key="${key}" data-val="${x.v}" aria-pressed="${w[key].includes(x.v)}" aria-label="${x.l}曜">${x.l}</button>`).join('');
+  return `<div class="wrap no-tab stack">
+    <div class="topbar"><button type="button" class="btn-link" data-act="nav" data-to="home">← ホーム</button></div>
+    <div class="stack-s"><h2>今週の予定を変更</h2><span class="muted small">${weekRangeText()}</span>
+      <div class="note info">今週だけに使います。基本の週間プランは変わらず、来週（${md(nextMondayYmd())}〜）から自動で通常の予定に戻ります。過去の記録は変わりません。</div></div>
+    <div class="card stack-s"><span class="label">今週 筋トレする曜日</span><div class="days" role="group" aria-label="今週の筋トレ曜日">${btns('days')}</div>
+      <p class="small muted">${w.days.length===f?`いつもどおり週${f}回です`:`今週は${w.days.length}日（通常は週${f}回）。メニューは順番どおり進み、まとめて行うことはありません`}</p></div>
+    <div class="card stack-s"><span class="label">今週 ${h(sport)}の曜日</span><div class="days" role="group" aria-label="今週の他の運動の曜日">${btns('sportDays')}</div>
+      ${WEEK.filter(x=>w.sportDays.includes(x.v)).map(x=>`<div class="field"><span class="small" style="font-weight:700">${x.l}曜の強度</span>${segHTML('wkint',x.v,[['light','軽め'],['normal','通常'],['hard','高強度・試合']],w.sportIntensity[x.v]||'normal')}</div>`).join('')}</div>
+    <button type="button" class="btn btn-primary btn-hero" data-act="wksave">今週だけ適用</button>
+    ${o?'<button type="button" class="btn btn-block" data-act="wkclear">通常の予定に戻す</button>':''}
+  </div>`;
+}
+
 /* ---------- Screens ---------- */
 function renderSetup(){
   UI.sd=UI.sd||defaultSettings();
@@ -1317,8 +1432,9 @@ function renderSetup(){
 function renderHome(){
   const p=Plan.build({});
   const today=new Date(); const todayWd=today.getDay();
-  const sportToday=(S.settings.sportDays||[]).includes(todayWd);
+  const tp=planFor(today), sportToday=tp.sportDays.includes(todayWd) && !S.planPaused;
   const sport=S.settings.sportName||'他の運動';
+  const ov=currentOverride(), pend=S.settingsPending;
   const wc=weekCount(), f=S.settings.freq;
   const todoItems=p.items.filter(i=>i.state==='todo');
   const last=S.sessions[S.sessions.length-1];
@@ -1337,29 +1453,40 @@ function renderHome(){
     <div class="topbar"><h1 class="brand">いえトレ手帳</h1><span class="muted small">${mdw(ymd())}</span></div>
     ${!Store.ok?`<div class="note warn"><strong>この環境ではデータを保存できません</strong>設定の「データを書き出す」で定期的にバックアップしてください。</div>`:''}
     ${UI.msg?`<div class="toast" role="status">${h(UI.msg)}</div>`:''}
+    ${S.planPaused?`<section class="card stack-s" style="border-color:var(--warn)" aria-labelledby="pauseL">
+        <span class="label" id="pauseL">プラン</span>
+        <h2>プランを一時停止中</h2>
+        <p class="small muted">${mdw(S.planPaused.since)}から停止しています。予定日に行わなくても未達にはなりません。種目ごとの進捗はそのまま残っています。</p>
+        <button type="button" class="btn btn-primary btn-block" data-act="resumeplan">プランを再開する</button>
+        <p class="small muted">再開すると ${h(p.tpl.label)}（${h(p.tpl.sub)}）から、停止前の回数・バリエーション・重量で続けます。</p>
+      </section>`:''}
     ${S.active
       ? `<button type="button" class="btn btn-primary btn-hero" data-act="resume">トレーニングを再開する</button>
          <p class="small muted" style="text-align:center">${h(S.active.dayLabel)}（${mdw(S.active.date)}開始）の途中です</p>`
+      : S.planPaused ? ''
       : sportToday
       ? `<button type="button" class="btn btn-primary btn-hero" data-act="warmup">${h(sport)}前のウォームアップ</button>
          <p class="small muted" style="text-align:center">今日は${h(sport)}の日です。筋トレはお休みにして、約5分のウォームアップを提案します。</p>
          <button type="button" class="btn btn-block" data-act="startcheck">筋トレも行う</button>`
       : `<button type="button" class="btn btn-primary btn-hero" data-act="startcheck">今日のトレーニングを始める</button>`}
-    ${S.settings.days.length!==+S.settings.freq?`<div class="note warn">週${S.settings.freq}回に対して曜日が${S.settings.days.length}つ選ばれています。設定で曜日を${S.settings.freq}つにしてください。</div>`:''}
-    <section class="card stack-s" aria-labelledby="plan">
+    ${S.settings.days.length!==+S.settings.freq?`<div class="note warn">週${S.settings.freq}回に対して曜日が${S.settings.days.length}つ選ばれています。「週間プランを設定し直す」で曜日を${S.settings.freq}つにしてください。</div>`:''}
+    ${S.planPaused?'':`<section class="card stack-s" aria-labelledby="plan">
       <span class="label" id="plan">今日の予定</span>
       <div class="row between"><h2>${h(p.tpl.label)} <span class="muted" style="font-size:16px">${h(p.tpl.sub)}</span></h2>
         <span class="num" style="font-size:24px;font-weight:600">約${p.estMin}<span class="small">分</span></span></div>
       <p class="small muted">${todoItems.map(i=>h(EX[i.exerciseId].name)+(i.optional?'（任意）':'')).join('・')}</p>
       ${p.items.some(i=>i.state==='paused')?`<div class="note pain">痛みで一時休止中：${p.items.filter(i=>i.state==='paused').map(i=>h(EX[i.exerciseId].name)).join('・')}（メニューを開くと対応を選べます）</div>`:''}
       <p class="small muted">${h(nextPlannedText())}</p>
+      ${ov?`<div class="note info">今週だけの予定：筋トレ ${h(daysText(ov.days))}／${h(sport)} ${h(daysText(ov.sportDays))}（来週から通常に戻ります）</div>`:''}
+      ${pend?`<div class="note info">${mdw(pend.effectiveFrom)}から：${h(planSummary(pend.settings).freq)}</div>`:''}
       ${movedNotice()?`<div class="note info">前回の予定を次回へ移動しました</div>`:''}
-    </section>
+      <div class="row" style="gap:4px 14px"><button type="button" class="linkish small" data-act="weekplan">今週の予定を変更</button><button type="button" class="linkish small" data-act="replan">週間プランを設定し直す</button><button type="button" class="linkish small" data-act="pauseplan">プランを一時停止</button></div>
+    </section>`}
     ${changes}
     ${stallHTML()}
     <section class="card stack-s" aria-label="今週の実施状況">
       <div class="row between">
-        <div><span class="label">今週</span><div><span class="num" style="font-size:30px;font-weight:600">${wc}</span> <span class="muted">/ ${f}回完了</span></div></div>
+        <div><span class="label">今週${S.planPaused?'（プラン一時停止中）':''}</span><div><span class="num" style="font-size:30px;font-weight:600">${wc}</span> <span class="muted">/ ${f}回完了</span></div></div>
         <div class="dots" aria-hidden="true">${dots}</div>
       </div>
       ${weeklySetsHTML()}
@@ -1409,7 +1536,7 @@ function renderWarmup(){
 
 function renderCheck(){
   const c=UI.cond, cl=condLevel(c);
-  const tomorrow=(new Date().getDay()+1)%7, sportEve=(S.settings.sportDays||[]).includes(tomorrow);
+  const tmr=addDays(new Date(),1), sInt=sportIntensityForDate(tmr), sportEve=!!sInt && sInt!=='light';
   let advice='';
   if(cl===2) advice=`<div class="note warn"><strong>今日は控えめにします</strong>負荷は上げず、各種目1セット減らします。時間を短くしたい場合は短縮モードも使えます。</div>`;
   else if(cl===1) advice=`<div class="note info">今日は負荷を上げず、前回と同じ回数で行います。</div>`;
@@ -1423,7 +1550,7 @@ function renderCheck(){
       <div><div style="font-weight:700">短縮モード</div><div class="small muted">15〜20分。重要な3種目に絞ります</div></div>
       <button type="button" class="opt" style="min-width:88px" data-act="toggleshort" aria-pressed="${UI.short}">${UI.short?'オン':'オフ'}</button>
     </div>
-    ${sportEve?`<div class="note info">明日は${h(S.settings.sportName||'他の運動')}の予定です。脚・肩の種目は控えめにします。</div>`:''}
+    ${sportEve?`<div class="note info">明日は${h(planFor(tmr).sportName)}（${SPORT_INT[sInt]}）の予定です。脚・肩の種目は回数を上げず${sInt==='hard'?'、1セット減らします':'、セット数は通常です'}。</div>`:''}
     <button type="button" class="btn btn-primary btn-hero" data-act="begin">この内容で始める</button>
   </div>`;
 }
@@ -1716,12 +1843,12 @@ function renderSettings(){
   const subs=Object.keys(S.subs).filter(k=>EX[k]&&EX[S.subs[k]]);
   return `<div class="wrap stack">
     <div class="topbar"><h1 class="brand">設定</h1></div>
-    ${settingsFormHTML(UI.sd)}
-    <details class="card flat" ${Object.keys(UI.goalEdits).length||UI.goalOpen?'open':''}><summary>種目ごとの現在の目標を調整</summary>
-      <p class="small muted" style="margin-bottom:6px">実力とずれていると感じたときに、バリエーション・回数・セット数・重量を直接変更できます。変更した種目は「手動で設定」と表示されます。</p>
-      ${goalEditorHTML('settings')}</details>
     ${UI.msg?`<div class="toast" role="status">${h(UI.msg)}</div>`:''}
-    <button type="button" class="btn btn-primary btn-block" data-act="savesettings" ${daysStatus(UI.sd).ok?'':'disabled'}>設定を保存</button>
+    ${planCardHTML()}
+    <details class="card flat" ${Object.keys(UI.goalEdits).length||UI.goalOpen?'open':''}><summary>種目ごとの現在の目標を調整</summary>
+      <p class="small muted" style="margin-bottom:6px">実力とずれていると感じたときに、バリエーション・回数・セット数・休憩・重量を直接変更できます。変更した種目は「手動で設定」と表示されます。</p>
+      ${goalEditorHTML('settings')}
+      <button type="button" class="btn btn-primary btn-block" data-act="savesettings" ${Object.keys(UI.goalEdits).length?'':'disabled'} style="margin-top:12px">目標を保存</button></details>
     ${(()=>{ const ps=Object.keys(EX).filter(id=>S.exercises[id]&&S.exercises[id].pausedByPain); if(!ps.length) return '';
       return `<section class="card stack-s"><span class="label">痛みで一時休止中の種目</span>
         ${ps.map(id=>`<div class="stack-s"><div class="row between"><strong>${h(EX[id].name)}</strong>${UI.resumeConfirm===id?'':`<button type="button" class="btn btn-sm" data-act="pauseresumeask" data-id="${id}">再開する</button>`}</div>
@@ -1746,7 +1873,7 @@ function renderSettings(){
       <p>同じ種目で「痛みあり」が2回続くと、その種目を一時休止にします（違和感は含めません）。再開は自分で操作するまで行いません。</p>
       <p>停滞候補：比較できる記録（同じバリエーション・同じ重量・通常の条件とセット数・フォーム良好・痛みなし）の直近3回で、目標・バリエーション・重量が伸びていないときに表示します。お知らせのみで、自動では変更しません。</p>
       <p>上限回数をフォーム良好・痛みなし・少し余裕以上で2回達成すると、難易度アップを提案します。ダンベルやリュック負荷の種目では「重量を上げて下限回数に戻す」も選べます。最初の2回は調整期間として増減幅を大きくしています。時間種目は1回＝5秒で計算します。</p></div></details>
-    <p class="small muted" style="text-align:center">いえトレ手帳 ${APP_BUILD}（データ形式 v${APP_VERSION}）</p>
+    <p class="small muted" style="text-align:center">いえトレ手帳 ${APP_BUILD}（データ形式 v${DATA_SCHEMA_VERSION}）</p>
     <section class="card stack-s">
       ${UI.confirmReset
         ? `<p>すべての設定と履歴を削除します。元に戻せません。</p><div class="btn-row"><button type="button" class="btn btn-danger-solid" data-act="resetyes">削除する</button><button type="button" class="btn" data-act="resetno">キャンセル</button></div>`
@@ -1880,11 +2007,14 @@ function closeForm(){ Video.destroy(); UI.form=null; const dlg=$('#dlg'); if(dlg
 /* ---------- Render ---------- */
 function render(){
   if(!S.settings && UI.screen!=='setup') UI.screen='setup';
+  if(maintainPlan()) save();   // 予約の適用・先週の「今週だけ」の解除
   let html;
   switch(UI.screen){
     case 'setup': html=renderSetup(); break;
     case 'check': html=renderCheck(); break;
     case 'warmup': html=renderWarmup(); break;
+    case 'replan': html=renderReplan(); break;
+    case 'weekplan': html=renderWeekPlan(); break;
     case 'today': html=renderToday(); break;
     case 'exercise': html=renderExercise(); break;
     case 'finish': html=renderFinish(); break;
@@ -2009,7 +2139,7 @@ function readImport(text){
 }
 
 const A = {
-  nav(d){ UI.msg=null; UI.resumeConfirm=null; UI.lvErr={}; UI.goalOpen=false; UI.sd=null; UI.exportText=null; UI.importPreview=null; UI.importErr=null; UI.confirmReset=false; UI.confirmDiscard=false; UI.goalEdits={}; UI.lvLoad={}; go(d.to); },
+  nav(d){ UI.msg=null; UI.resumeConfirm=null; UI.wk=null; UI.applyTiming=null; UI.lvErr={}; UI.goalOpen=false; UI.sd=null; UI.exportText=null; UI.importPreview=null; UI.importErr=null; UI.confirmReset=false; UI.confirmDiscard=false; UI.goalEdits={}; UI.lvLoad={}; go(d.to); },
   sdset(d){
     const v=d.key==='freq'?+d.val:(d.key==='restSound'?d.val==='on':d.val); UI.sd[d.key]=v;
     if(d.key==='freq' && UI.sd.days.length>v) UI.sd.days=UI.sd.days.slice(-v);   // 週回数より多い曜日は古い選択から外す
@@ -2029,15 +2159,44 @@ const A = {
     Object.keys(EX).forEach(id=>{ S.exercises[id]=Engine.newState(id, goals[id]); });
     save(); UI.sd=null; UI.goalEdits={}; go('home');
   },
-  savesettings(){
-    if(!daysStatus(UI.sd).ok) return;
-    const old=S.settings;
+  savesettings(){   // 設定画面の「目標を保存」：種目ごとの目標だけを保存（週間プランは「設定し直す」から）
     const goals={}; Object.keys(UI.goalEdits).forEach(id=>{ goals[id]=finalGoal(id,'settings'); });
-    if(UI.sd.freq!==old.freq) S.rotation=0;
-    S.settings=Object.assign({}, old, UI.sd);
     Object.keys(goals).forEach(id=>Engine.setGoal(id, goals[id]));
-    save(); UI.sd=null; UI.goalEdits={}; go('settings',{msg:'設定を保存しました'});
+    save(); UI.sd=null; UI.goalEdits={}; go('settings',{msg:'目標を保存しました'});
   },
+  /* ---- 週間プランの設定し直し（記録・進捗は消さない） ---- */
+  replan(){ UI.replanFrom=(UI.screen==='home'?'home':'settings'); UI.sd=null; UI.applyTiming=null; UI.msg=null; go('replan'); },
+  replanback(){ UI.sd=null; UI.applyTiming=null; go(UI.replanFrom||'settings'); },
+  applytiming(d){ UI.applyTiming=d.val; render(); },
+  savereplan(){
+    if(!daysStatus(UI.sd).ok) return;
+    const t=replanTiming(), nw=Object.assign({}, S.settings, UI.sd, {createdAt:S.settings.createdAt});
+    S.settings.restSound=!!nw.restSound;   // 音の設定はすぐ反映
+    let msg;
+    if(t==='now'){
+      const oldFreq=+S.settings.freq;
+      S.settings=nw; S.settingsPending=null; S.weeklyOverride=null;
+      if(+nw.freq!==oldFreq) S.rotation=0;   // 実施中のS.activeは変えない（終了時に回転を進めない）
+      msg='週間プランを保存しました（今週から反映）。記録と進捗はそのままです';
+    } else {
+      S.settingsPending={settings:nw, effectiveFrom:nextMondayYmd(), savedAt:ymd()};
+      msg=`週間プランを保存しました。${mdw(S.settingsPending.effectiveFrom)}から反映します`;
+    }
+    save(); const back=UI.replanFrom||'settings'; UI.sd=null; UI.applyTiming=null; go(back,{msg});
+  },
+  cancelpending(){ S.settingsPending=null; save(); UI.msg='変更の予約を取り消しました'; render(); },
+  /* ---- 今週だけの変更（恒久設定は書き換えない） ---- */
+  weekplan(){ UI.wk=null; UI.msg=null; go('weekplan'); },
+  wktoggle(d){ const k=d.key, v=+d.val; const a=UI.wk[k]; UI.wk[k]= a.includes(v)? a.filter(x=>x!==v) : a.concat(v); render(); },
+  wkint(d){ UI.wk.sportIntensity=Object.assign({}, UI.wk.sportIntensity, {[d.key]:d.val}); render(); },
+  wksave(){
+    S.weeklyOverride={weekStart:thisWeekYmd(), days:UI.wk.days.slice(), sportDays:UI.wk.sportDays.slice(), sportIntensity:Object.assign({},UI.wk.sportIntensity), savedAt:ymd()};
+    save(); UI.wk=null; go('home',{msg:'今週だけの予定を保存しました。来週から通常の予定に戻ります'});
+  },
+  wkclear(){ S.weeklyOverride=null; save(); UI.wk=null; UI.msg='通常の予定に戻しました'; if(UI.screen==='weekplan') go('home',{msg:UI.msg}); else render(); },
+  /* ---- プランの一時停止・再開（進捗はそのまま） ---- */
+  pauseplan(){ S.planPaused={since:ymd()}; save(); UI.msg='プランを一時停止しました。進捗はそのまま残ります'; render(); },
+  resumeplan(){ S.planPaused=null; S.planResumedAt=ymd(); save(); UI.msg='プランを再開しました。停止前の回数・バリエーション・重量から続けます'; render(); },
   goalvar(d,t){
     const ex=EX[d.id], i=Engine.idx(ex,t.value), v=ex.variations[i], mode=UI.screen==='setup'?'setup':'settings';
     const cur=goalOf(d.id,mode);
@@ -2179,6 +2338,7 @@ window.addEventListener('online', refreshFormVideo);
 window.addEventListener('offline', refreshFormVideo);
 
 /* PWA: <link rel="manifest"> がある環境（GitHub Pages版）でのみ Service Worker を登録 */
+if(maintainPlan()) save();
 Rest.restore();
 if('serviceWorker' in navigator && document.querySelector('link[rel="manifest"]')){
   window.addEventListener('load', ()=>{ navigator.serviceWorker.register('./service-worker.js').catch(()=>{}); });

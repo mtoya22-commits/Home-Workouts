@@ -1,11 +1,11 @@
 // いえトレ手帳 service worker — アプリ本体だけをキャッシュしてオフラインでも起動
 // フォーム動画（YouTube等の外部動画・IFrame API）はキャッシュしない：外部ストリーミングとして毎回ネットから読む
-const CACHE = 'ietore-v4.1';
+const CACHE = 'ietore-v4.2';
 const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS))); self.skipWaiting(); });
 self.addEventListener('activate', e => {
-  // 旧バージョン（ietore-v1〜v4）のキャッシュを削除
+  // 旧バージョン（ietore-v1〜v4.1）のキャッシュを削除
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))));
   self.clients.claim();
 });
